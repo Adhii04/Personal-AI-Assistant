@@ -22,23 +22,59 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
       - name: Install dependencies
         working-directory: ./backend
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Run basic import test
+      - name: Create test environment
         working-directory: ./backend
         run: |
-          python -c "from app.main import app; print('✅ Backend imports successfully')"
+          echo "DATABASE_URL=sqlite:///./test.db" > .env
+          echo "SECRET_KEY=test-secret-key-for-github-actions-only-not-production" >> .env
+          echo "ALGORITHM=HS256" >> .env
+          echo "ACCESS_TOKEN_EXPIRE_MINUTES=30" >> .env
+          echo "OPENAI_API_KEY=sk-test-key-not-real" >> .env
+          echo "PORT=8000" >> .env
       
-      - name: Check code syntax
+      - name: Run syntax check
         working-directory: ./backend
         run: |
           python -m py_compile app/main.py
           python -m py_compile app/config.py
           python -m py_compile app/models.py
+          python -m py_compile app/database.py
+          python -m py_compile app/auth.py
+          python -m py_compile app/dependencies.py
+          python -m py_compile app/schemas.py
+          python -m py_compile app/routers/auth.py
+          python -m py_compile app/routers/chat.py
           echo "✅ All Python files have valid syntax"
+      
+      - name: Test imports
+        working-directory: ./backend
+        run: |
+          python -c "from app.main import app; print('✅ Backend imports successfully')"
+          python -c "from app.models import User, ChatMessage; print('✅ Models import successfully')"
+          python -c "from app.config import get_settings; print('✅ Config imports successfully')"
+      
+      - name: Test database models
+        working-directory: ./backend
+        run: |
+          python -c "
+          from app.database import Base, engine
+          Base.metadata.create_all(bind=engine)
+          print('✅ Database tables created successfully')
+          "
 
   test-frontend:
     name: Test Frontend
@@ -53,20 +89,64 @@ jobs:
         with:
           node-version: '20'
       
+      - name: Cache Node modules
+        uses: actions/cache@v3
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      
       - name: Install dependencies
         working-directory: ./frontend
-        run: npm install
+        run: npm ci
+      
+      - name: Create production environment
+        working-directory: ./frontend
+        run: |
+          echo "VITE_API_URL=https://api.example.com" > .env
       
       - name: Build frontend
         working-directory: ./frontend
         run: npm run build
       
-      - name: Check build artifacts
+      - name: Verify build output
         working-directory: ./frontend
         run: |
           if [ -d "dist" ]; then
             echo "✅ Frontend build successful"
+            echo "Build size:"
+            du -sh dist/
           else
-            echo "❌ Frontend build failed"
+            echo "❌ Frontend build failed - dist directory not found"
+            exit 1
+          fi
+      
+      - name: Check for build errors
+        working-directory: ./frontend
+        run: |
+          if [ -f "dist/index.html" ]; then
+            echo "✅ index.html generated"
+          else
+            echo "❌ index.html not found"
+            exit 1
+          fi
+
+  summary:
+    name: Test Summary
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test-backend.result }}" == "success" ] && [ "${{ needs.test-frontend.result }}" == "success" ]; then
+            echo "✅ All tests passed!"
+            exit 0
+          else
+            echo "❌ Some tests failed"
+            echo "Backend: ${{ needs.test-backend.result }}"
+            echo "Frontend: ${{ needs.test-frontend.result }}"
             exit 1
           fi
