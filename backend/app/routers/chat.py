@@ -17,7 +17,7 @@ if settings.openai_api_key:
         model=settings.openai_model,
         temperature=0.7,
         openai_api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url
+        openai_api_base=settings.openai_base_url
     )
 else:
     llm = None
