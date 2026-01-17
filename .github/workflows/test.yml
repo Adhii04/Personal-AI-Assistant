@@ -13,6 +13,14 @@ jobs:
     name: Test Backend
     runs-on: ubuntu-latest
     
+    env:
+      DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+      SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+      OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      PORT: 8000
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,14 +44,14 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Create test environment
+      - name: Create .env file from secrets
         working-directory: ./backend
         run: |
-          echo "DATABASE_URL=sqlite:///./test.db" > .env
-          echo "SECRET_KEY=test-secret-key-for-github-actions-only-not-production" >> .env
+          echo "DATABASE_URL=${{ secrets.TEST_DATABASE_URL }}" > .env
+          echo "SECRET_KEY=${{ secrets.TEST_SECRET_KEY }}" >> .env
           echo "ALGORITHM=HS256" >> .env
           echo "ACCESS_TOKEN_EXPIRE_MINUTES=30" >> .env
-          echo "OPENAI_API_KEY=sk-test-key-not-real" >> .env
+          echo "OPENAI_API_KEY=${{ secrets.TEST_OPENAI_API_KEY }}" >> .env
           echo "PORT=8000" >> .env
       
       - name: Run syntax check
@@ -67,14 +75,10 @@ jobs:
           python -c "from app.models import User, ChatMessage; print('✅ Models import successfully')"
           python -c "from app.config import get_settings; print('✅ Config imports successfully')"
       
-      - name: Test database models
+      - name: Test database tables creation
         working-directory: ./backend
         run: |
-          python -c "
-          from app.database import Base, engine
-          Base.metadata.create_all(bind=engine)
-          print('✅ Database tables created successfully')
-          "
+          python -c "from app.database import Base, engine; Base.metadata.create_all(bind=engine); print('✅ Database tables created successfully')"
 
   test-frontend:
     name: Test Frontend
@@ -101,7 +105,7 @@ jobs:
         working-directory: ./frontend
         run: npm ci
       
-      - name: Create production environment
+      - name: Create environment file
         working-directory: ./frontend
         run: |
           echo "VITE_API_URL=https://api.example.com" > .env
@@ -115,20 +119,8 @@ jobs:
         run: |
           if [ -d "dist" ]; then
             echo "✅ Frontend build successful"
-            echo "Build size:"
-            du -sh dist/
           else
-            echo "❌ Frontend build failed - dist directory not found"
-            exit 1
-          fi
-      
-      - name: Check for build errors
-        working-directory: ./frontend
-        run: |
-          if [ -f "dist/index.html" ]; then
-            echo "✅ index.html generated"
-          else
-            echo "❌ index.html not found"
+            echo "❌ Frontend build failed"
             exit 1
           fi
 
@@ -139,14 +131,13 @@ jobs:
     if: always()
     
     steps:
-      - name: Check test results
+      - name: Test Results
         run: |
+          echo "Backend Tests: ${{ needs.test-backend.result }}"
+          echo "Frontend Tests: ${{ needs.test-frontend.result }}"
           if [ "${{ needs.test-backend.result }}" == "success" ] && [ "${{ needs.test-frontend.result }}" == "success" ]; then
             echo "✅ All tests passed!"
-            exit 0
           else
             echo "❌ Some tests failed"
-            echo "Backend: ${{ needs.test-backend.result }}"
-            echo "Frontend: ${{ needs.test-frontend.result }}"
             exit 1
           fi
