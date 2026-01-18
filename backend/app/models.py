@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -9,10 +9,17 @@ class User(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)  # Nullable for OAuth users
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Relationship
+    # Google OAuth
+    google_id = Column(String, unique=True, nullable=True, index=True)
+    google_access_token = Column(Text, nullable=True)
+    google_refresh_token = Column(Text, nullable=True)
+    google_token_expiry = Column(DateTime(timezone=True), nullable=True)
+    is_google_connected = Column(Boolean, default=False)
+    
+    # Relationships
     messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
 
 
