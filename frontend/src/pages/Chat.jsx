@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { chatAPI } from '../services/api';
+import { chatAPI, googleAPI, gmailAPI, calendarAPI } from '../services/api';
 import { removeToken } from '../utils/auth';
 
 function Chat() {
@@ -8,12 +8,15 @@ function Chat() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [showGooglePrompt, setShowGooglePrompt] = useState(false);
   const messagesEndRef = useRef(null);
   const navigate = useNavigate();
 
-  // Load chat history on mount
+  // Load chat history and check Google connection on mount
   useEffect(() => {
     loadHistory();
+    checkGoogleConnection();
   }, []);
 
   // Auto-scroll to bottom
@@ -27,6 +30,29 @@ function Chat() {
       setMessages(response.data);
     } catch (err) {
       console.error('Failed to load history:', err);
+    }
+  };
+
+  const checkGoogleConnection = async () => {
+    try {
+      const response = await googleAPI.getConnectionStatus();
+      setGoogleConnected(response.data.is_connected);
+      
+      // Show prompt if not connected
+      if (!response.data.is_connected) {
+        setTimeout(() => setShowGooglePrompt(true), 2000);
+      }
+    } catch (err) {
+      console.error('Failed to check Google connection:', err);
+    }
+  };
+
+  const handleConnectGoogle = async () => {
+    try {
+      const response = await googleAPI.getAuthUrl();
+      window.location.href = response.data.auth_url;
+    } catch (err) {
+      setError('Failed to connect Google account');
     }
   };
 
@@ -49,7 +75,9 @@ function Chat() {
     setMessages((prev) => [...prev, tempUserMsg]);
 
     try {
-      const response = await chatAPI.sendMessage(userMessage);
+      // Use tools endpoint if Google is connected
+      const endpoint = googleConnected ? chatAPI.sendMessageWithTools : chatAPI.sendMessage;
+      const response = await endpoint(userMessage);
       
       // Add assistant response
       const assistantMsg = {
@@ -88,7 +116,12 @@ function Chat() {
     <div style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
-        <h1 style={styles.headerTitle}>AI Assistant</h1>
+        <div>
+          <h1 style={styles.headerTitle}>AI Assistant</h1>
+          {googleConnected && (
+            <span style={styles.connectedBadge}>✓ Google Connected</span>
+          )}
+        </div>
         <div style={styles.headerButtons}>
           <button onClick={handleClearHistory} style={styles.clearButton}>
             Clear History
@@ -99,6 +132,26 @@ function Chat() {
         </div>
       </div>
 
+      {/* Google Connection Prompt */}
+      {showGooglePrompt && !googleConnected && (
+        <div style={styles.googlePrompt}>
+          <div style={styles.promptContent}>
+            <h3 style={styles.promptTitle}>🚀 Unlock Full Power!</h3>
+            <p style={styles.promptText}>
+              Connect your Google account to let me access your Gmail and Calendar
+            </p>
+            <div style={styles.promptButtons}>
+              <button onClick={handleConnectGoogle} style={styles.connectButton}>
+                Connect Google
+              </button>
+              <button onClick={() => setShowGooglePrompt(false)} style={styles.dismissButton}>
+                Maybe Later
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div style={styles.messagesContainer}>
         {messages.length === 0 && (
@@ -107,6 +160,11 @@ function Chat() {
             <p style={styles.emptyText}>
               I'm your AI assistant. Ask me anything!
             </p>
+            {googleConnected && (
+              <p style={styles.emptyHint}>
+                💡 Try: "What's in my inbox?" or "What's on my schedule today?"
+              </p>
+            )}
           </div>
         )}
 
@@ -128,7 +186,9 @@ function Chat() {
         {loading && (
           <div style={{ ...styles.message, ...styles.assistantMessage }}>
             <div style={styles.messageRole}>🤖 Assistant</div>
-            <div style={styles.messageContent}>Thinking...</div>
+            <div style={styles.messageContent}>
+              {googleConnected ? 'Checking your Gmail and Calendar...' : 'Thinking...'}
+            </div>
           </div>
         )}
 
@@ -144,7 +204,11 @@ function Chat() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your message..."
+          placeholder={
+            googleConnected
+              ? "Ask about emails, calendar, or anything..."
+              : "Type your message..."
+          }
           style={styles.input}
           disabled={loading}
         />
@@ -183,6 +247,13 @@ const styles = {
     margin: 0,
     fontSize: '24px',
   },
+  connectedBadge: {
+    fontSize: '12px',
+    background: 'rgba(255,255,255,0.2)',
+    padding: '4px 8px',
+    borderRadius: '4px',
+    marginLeft: '10px',
+  },
   headerButtons: {
     display: 'flex',
     gap: '10px',
@@ -206,6 +277,45 @@ const styles = {
     fontSize: '14px',
     fontWeight: '600',
   },
+  googlePrompt: {
+    background: '#fff3cd',
+    borderBottom: '1px solid #ffc107',
+    padding: '16px',
+  },
+  promptContent: {
+    maxWidth: '600px',
+    margin: '0 auto',
+  },
+  promptTitle: {
+    margin: '0 0 8px 0',
+    fontSize: '18px',
+    color: '#856404',
+  },
+  promptText: {
+    margin: '0 0 16px 0',
+    color: '#856404',
+  },
+  promptButtons: {
+    display: 'flex',
+    gap: '10px',
+  },
+  connectButton: {
+    background: '#667eea',
+    color: 'white',
+    border: 'none',
+    padding: '10px 20px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: '600',
+  },
+  dismissButton: {
+    background: 'transparent',
+    color: '#856404',
+    border: '1px solid #856404',
+    padding: '10px 20px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+  },
   messagesContainer: {
     flex: 1,
     overflowY: 'auto',
@@ -225,6 +335,12 @@ const styles = {
   emptyText: {
     color: '#666',
     fontSize: '18px',
+  },
+  emptyHint: {
+    color: '#667eea',
+    fontSize: '14px',
+    marginTop: '20px',
+    fontStyle: 'italic',
   },
   message: {
     padding: '16px',

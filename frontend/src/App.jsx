@@ -3,6 +3,7 @@ import { isAuthenticated } from './utils/auth';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Chat from './pages/Chat';
+import GoogleCallback from './pages/GoogleCallback';
 
 // Protected Route wrapper
 function ProtectedRoute({ children }) {
@@ -33,6 +34,10 @@ function App() {
               <Register />
             </PublicRoute>
           }
+        />
+        <Route
+          path="/auth/callback"
+          element={<GoogleCallback />}
         />
         <Route
           path="/chat"
