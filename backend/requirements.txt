@@ -8,8 +8,6 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.6
-langchain==0.1.4
-langchain-openai==0.0.5
 python-dotenv==1.0.0
 email-validator==2.1.0
 
@@ -20,5 +18,8 @@ google-auth-httplib2==0.2.0
 google-api-python-client==2.116.0
 pytz==2024.1
 
-# LangGraph for agent graphs
+# ===== LangChain Agent Stack (STABLE) =====
+langchain==0.1.16
+langchain-openai==0.1.6
 langgraph==0.0.48
+langsmith==0.1.17
