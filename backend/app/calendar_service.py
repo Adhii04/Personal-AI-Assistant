@@ -269,7 +269,7 @@ def search_events(
     except Exception as e:
         raise Exception(f"Failed to search events: {str(e)}")
     
-    def create_event(
+def create_event(
     access_token: str,
     summary: str,
     start_time: str,
@@ -293,36 +293,36 @@ def search_events(
         Returns:
             Created event details
         """
-    try:
-        service = create_calendar_service(access_token)
-        
-        event = {
-            'summary': summary,
-            'location': location,
-            'description': description,
-            'start': {
-                'dateTime': start_time,
-                'timeZone': 'UTC',
-            },
-            'end': {
-                'dateTime': end_time,
-                'timeZone': 'UTC',
-            },
-        }
-        
-        created_event = service.events().insert(
-            calendarId=calendar_id,
-            body=event
-        ).execute()
-        
-        return {
-            'id': created_event['id'],
-            'summary': created_event.get('summary', ''),
-            'start': created_event['start'].get('dateTime', ''),
-            'end': created_event['end'].get('dateTime', ''),
-            'html_link': created_event.get('htmlLink', ''),
-            'status': 'created'
-        }
-        
-    except Exception as e:
-        raise Exception(f"Failed to create event: {str(e)}")
+        try:
+            service = create_calendar_service(access_token)
+            
+            event = {
+                'summary': summary,
+                'location': location,
+                'description': description,
+                'start': {
+                    'dateTime': start_time,
+                    'timeZone': 'UTC',
+                },
+                'end': {
+                    'dateTime': end_time,
+                    'timeZone': 'UTC',
+                },
+            }
+            
+            created_event = service.events().insert(
+                calendarId=calendar_id,
+                body=event
+            ).execute()
+            
+            return {
+                'id': created_event['id'],
+                'summary': created_event.get('summary', ''),
+                'start': created_event['start'].get('dateTime', ''),
+                'end': created_event['end'].get('dateTime', ''),
+                'html_link': created_event.get('htmlLink', ''),
+                'status': 'created'
+            }
+            
+        except Exception as e:
+            raise Exception(f"Failed to create event: {str(e)}")
