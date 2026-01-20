@@ -8,6 +8,7 @@ from app.dependencies import get_current_user
 from app.config import get_settings
 from app.agent_tools import AgentTools
 from app.agent.graph import build_agent
+from app.memory.loader import load_user_memories
 
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
@@ -36,28 +37,27 @@ else:
 def send_message(
     chat_request: ChatRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
 
-    # Save user message
     db.add(ChatMessage(
         user_id=current_user.id,
         role="user",
-        content=chat_request.message
+        content=chat_request.message,
     ))
     db.commit()
 
     response = llm.invoke([
         SystemMessage(content="You are a helpful personal AI assistant."),
-        HumanMessage(content=chat_request.message)
+        HumanMessage(content=chat_request.message),
     ])
 
     assistant_msg = ChatMessage(
         user_id=current_user.id,
         role="assistant",
-        content=response.content
+        content=response.content,
     )
     db.add(assistant_msg)
     db.commit()
@@ -65,77 +65,58 @@ def send_message(
 
     return {
         "response": response.content,
-        "message_id": assistant_msg.id
+        "message_id": assistant_msg.id,
     }
 
 
 # ----------------------------
-# CHAT WITH TOOLS + MEMORY (AGENT)
+# CHAT WITH TOOLS + MEMORY
 # ----------------------------
 @router.post("/message/tools", response_model=ChatResponse)
 def send_message_with_tools(
     chat_request: ChatRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
 
     if not current_user.is_google_connected or not current_user.google_access_token:
-        raise HTTPException(
-            status_code=403,
-            detail="Please connect your Google account"
-        )
+        raise HTTPException(status_code=403, detail="Please connect your Google account")
 
-    # Initialize tools
+    # -------- Run LangGraph Agent --------
     tools = AgentTools(current_user.google_access_token)
-
-    # Build LangGraph agent
     agent = build_agent(tools)
 
-    # ----------------------------
-    # RUN AGENT (IMPORTANT)
-    # ----------------------------
     try:
         state = agent.invoke({
             "message": chat_request.message,
             "intent": None,
             "result": None,
-            "extracted_memory": None
         })
     except Exception as e:
-        print("AGENT ERROR:", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent execution failed: {str(e)}"
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
+
+    tool_result = state.get("result", "")
+
+    # -------- LOAD MEMORY FROM DB (FIX) --------
+    memories = load_user_memories(current_user.id)
+
+    memory_text = ""
+    if memories:
+        memory_text = "User preferences and memories:\n" + "\n".join(
+            f"- {m}" for m in memories
         )
 
-
-    if not isinstance(state, dict):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent returned invalid state: {state}"
-        )
-
-    tool_result = state.get("tool_result") or state.get("result", "")
-    memories = state.get("memories") or []
-
-    print("DEBUG: Saving message")
-    # ----------------------------
+    # -------- Save user message --------
     db.add(ChatMessage(
         user_id=current_user.id,
         role="user",
-        content=chat_request.message
+        content=chat_request.message,
     ))
     db.commit()
 
-    # ----------------------------
-    # BUILD FINAL PROMPT (WITH MEMORY)
-    # ----------------------------
-    memory_text = ""
-    if memories:
-        memory_text = "\nUser Memory:\n" + "\n".join(f"- {m}" for m in memories)
-
+    # -------- Final LLM response --------
     prompt = f"""
 User request:
 {chat_request.message}
@@ -150,13 +131,13 @@ Respond clearly and helpfully, using the user's memory when relevant.
 
     response = llm.invoke([
         SystemMessage(content="You are a helpful personal AI assistant."),
-        HumanMessage(content=prompt)
+        HumanMessage(content=prompt),
     ])
 
     assistant_msg = ChatMessage(
         user_id=current_user.id,
         role="assistant",
-        content=response.content
+        content=response.content,
     )
     db.add(assistant_msg)
     db.commit()
@@ -164,7 +145,7 @@ Respond clearly and helpfully, using the user's memory when relevant.
 
     return {
         "response": response.content,
-        "message_id": assistant_msg.id
+        "message_id": assistant_msg.id,
     }
 
 
@@ -175,7 +156,7 @@ Respond clearly and helpfully, using the user's memory when relevant.
 def get_chat_history(
     limit: int = 50,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     messages = (
         db.query(ChatMessage)
@@ -190,7 +171,7 @@ def get_chat_history(
 @router.delete("/history", status_code=204)
 def clear_chat_history(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     db.query(ChatMessage).filter(
         ChatMessage.user_id == current_user.id
