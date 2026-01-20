@@ -1,67 +1,90 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import datetime
+import re
+
 from app.database import get_db
 from app.models import User, ChatMessage
 from app.schemas import ChatRequest, ChatResponse, ChatMessageResponse
 from app.dependencies import get_current_user
 from app.config import get_settings
+from app.agent_tools import AgentTools
+
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
-from app.agent_tools import AgentTools, get_available_tools_description
-import json
-import re
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 settings = get_settings()
 
-# Initialize LangChain LLM
+# Initialize LLM
 if settings.openai_api_key:
     llm = ChatOpenAI(
         model=settings.openai_model,
         temperature=0.7,
         openai_api_key=settings.openai_api_key,
-        openai_api_base=settings.openai_base_url
+        openai_api_base=settings.openai_base_url,
     )
 else:
     llm = None
 
 
-def execute_agent_tool(tools: AgentTools, tool_call: str) -> str:
-    """
-    Execute an agent tool based on the tool call string
-    """
-    try:
-        # Parse tool call (format: "function_name(args)")
-        match = re.match(r'(\w+)\((.*?)\)', tool_call)
-        if not match:
-            return f"Invalid tool call format: {tool_call}"
-        
-        function_name = match.group(1)
-        args_str = match.group(2)
-        
-        # Parse arguments
-        args = []
-        if args_str:
-            # Simple argument parsing (handles strings and numbers)
-            for arg in args_str.split(','):
-                arg = arg.strip().strip('"').strip("'")
-                try:
-                    # Try to convert to int
-                    args.append(int(arg))
-                except ValueError:
-                    args.append(arg)
-        
-        # Execute tool
-        if hasattr(tools, function_name):
-            tool_function = getattr(tools, function_name)
-            result = tool_function(*args)
-            return result
-        else:
-            return f"Tool not found: {function_name}"
-            
-    except Exception as e:
-        return f"Error executing tool: {str(e)}"
+# ----------------------------
+# Helpers
+# ----------------------------
 
+def detect_intent(message: str) -> str:
+    msg = message.lower()
+
+    if any(w in msg for w in ["add", "create", "schedule"]) and \
+       any(w in msg for w in ["meeting", "event", "appointment"]):
+        return "CREATE_EVENT"
+
+    if any(w in msg for w in ["reschedule", "move"]):
+        return "RESCHEDULE_EVENT"
+
+    if any(w in msg for w in ["delete", "cancel"]):
+        return "DELETE_EVENT"
+
+    if any(w in msg for w in ["schedule", "calendar", "meeting", "event"]):
+        return "READ_CALENDAR"
+
+    return "CHAT"
+
+
+def extract_time_and_title(message: str):
+    """
+    Extract time (11am / 3:30pm) and title (for cricket match)
+    """
+    msg = message.lower()
+
+    # Time
+    time_match = re.search(r'\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b', msg)
+    if not time_match:
+        return None, None
+
+    hour = int(time_match.group(1))
+    minute = int(time_match.group(2)) if time_match.group(2) else 0
+    period = time_match.group(3)
+
+    if period == "pm" and hour < 12:
+        hour += 12
+    if period == "am" and hour == 12:
+        hour = 0
+
+    time_str = f"{hour:02d}:{minute:02d}"
+
+    # Title
+    title = "Meeting"
+    title_match = re.search(r'for\s+(.+)', message, re.IGNORECASE)
+    if title_match:
+        title = title_match.group(1).strip()
+
+    return time_str, title
+
+
+# ----------------------------
+# Chat (LLM only)
+# ----------------------------
 
 @router.post("/message", response_model=ChatResponse)
 def send_message(
@@ -71,90 +94,40 @@ def send_message(
 ):
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
-    
-    # Save user message
-    user_message = ChatMessage(
+
+    user_msg = ChatMessage(
         user_id=current_user.id,
         role="user",
         content=chat_request.message
     )
-    db.add(user_message)
+    db.add(user_msg)
     db.commit()
-    
-    # Get recent chat history
-    recent_messages = db.query(ChatMessage)\
-        .filter(ChatMessage.user_id == current_user.id)\
-        .order_by(ChatMessage.created_at.desc())\
-        .limit(10)\
-        .all()
-    
-    # Check if user has Google connected
-    has_google_access = current_user.is_google_connected and current_user.google_access_token
-    
-    # Build system message
-    if has_google_access:
-        system_content = f"""You are a helpful personal AI assistant with access to the user's Gmail and Google Calendar.
 
-{get_available_tools_description()}
+    messages = [
+        SystemMessage(content="You are a helpful personal AI assistant."),
+        HumanMessage(content=chat_request.message)
+    ]
 
-When the user asks about emails or calendar, you should:
-1. Tell them you're checking their Gmail/Calendar
-2. Indicate which tool you would use (e.g., "Let me check your recent emails...")
-3. Provide a natural, helpful response
+    response = llm.invoke(messages)
 
-Note: In this simplified version, describe what you would do. Full tool integration coming soon.
-"""
-    else:
-        system_content = "You are a helpful personal assistant. Be concise and friendly. Note: User hasn't connected their Google account yet, so you can't access their emails or calendar."
-    
-    # Build conversation context
-    messages = [SystemMessage(content=system_content)]
-    
-    # Add history
-    for msg in reversed(recent_messages[:-1]):
-        if msg.role == "user":
-            messages.append(HumanMessage(content=msg.content))
-        else:
-            messages.append(AIMessage(content=msg.content))
-    
-    # Add current message
-    messages.append(HumanMessage(content=chat_request.message))
-    
-    # Get LLM response
-    try:
-        response = llm.invoke(messages)
-        assistant_content = response.content
-        
-        # If user has Google access and message is about emails/calendar, add helpful note
-        if has_google_access:
-            email_keywords = ['email', 'inbox', 'mail', 'message']
-            calendar_keywords = ['calendar', 'schedule', 'meeting', 'event', 'appointment']
-            
-            user_message_lower = chat_request.message.lower()
-            
-            if any(keyword in user_message_lower for keyword in email_keywords):
-                assistant_content += "\n\n💡 Tip: I can access your Gmail! Try asking me to 'check my recent emails' or 'search for emails from [person]'."
-            elif any(keyword in user_message_lower for keyword in calendar_keywords):
-                assistant_content += "\n\n💡 Tip: I can access your Calendar! Try asking me 'what's on my schedule today?' or 'do I have any meetings this week?'."
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
-    
-    # Save assistant message
-    assistant_message = ChatMessage(
+    assistant_msg = ChatMessage(
         user_id=current_user.id,
         role="assistant",
-        content=assistant_content
+        content=response.content
     )
-    db.add(assistant_message)
+    db.add(assistant_msg)
     db.commit()
-    db.refresh(assistant_message)
-    
+    db.refresh(assistant_msg)
+
     return {
-        "response": assistant_content,
-        "message_id": assistant_message.id
+        "response": response.content,
+        "message_id": assistant_msg.id
     }
 
+
+# ----------------------------
+# Chat WITH TOOLS (Agent)
+# ----------------------------
 
 @router.post("/message/tools", response_model=ChatResponse)
 def send_message_with_tools(
@@ -162,121 +135,103 @@ def send_message_with_tools(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Enhanced chat endpoint that actually executes Gmail/Calendar tools
-    """
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
-    
-    # Check if user has Google access
+
     if not current_user.is_google_connected or not current_user.google_access_token:
         raise HTTPException(
             status_code=403,
-            detail="Please connect your Google account to use this feature"
+            detail="Please connect your Google account"
         )
-    
-    # Initialize agent tools
+
     tools = AgentTools(current_user.google_access_token)
-    
-    # Determine which tool to use based on user message
-    message_lower = chat_request.message.lower()
+    intent = detect_intent(chat_request.message)
     tool_result = None
-    
-    # Check for calendar event creation FIRST
-    if ('add' in message_lower or 'create' in message_lower or 'schedule' in message_lower) and \
-       ('meeting' in message_lower or 'event' in message_lower or 'appointment' in message_lower):
-        # Import datetime for event creation
-        from datetime import datetime
-        
-        # Try to extract time (e.g., "11am", "11:00", "3pm")
-        time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', message_lower)
-        if time_match:
-            hour = int(time_match.group(1))
-            minute = int(time_match.group(2)) if time_match.group(2) else 0
-            period = time_match.group(3)
-            
-            # Convert to 24-hour format
-            if period == 'pm' and hour < 12:
-                hour += 12
-            elif period == 'am' and hour == 12:
-                hour = 0
-            
-            # Use today's date
+
+    # ----------------------------
+    # INTENT EXECUTION
+    # ----------------------------
+
+    if intent == "CREATE_EVENT":
+        time_str, title = extract_time_and_title(chat_request.message)
+
+        if not time_str:
+            tool_result = "❌ I couldn't understand the time. Try: 'Add meeting at 11am'"
+        else:
             today = datetime.now()
-            time_str = f"{hour:02d}:{minute:02d}"
-            
-            # Extract event title
-            title = "Meeting"
-            title_match = re.search(r'for\s+([^at]+?)(?:\s+at|\s*$)', chat_request.message, re.IGNORECASE)
-            if title_match:
-                title = title_match.group(1).strip()
-            else:
-                title_match = re.search(r'(?:add|create|schedule)\s+(?:a\s+)?(?:meeting|event)?\s*(?:for)?\s+([^at]+)', chat_request.message, re.IGNORECASE)
-                if title_match:
-                    title = title_match.group(1).strip()
-            
-            # Create the event
             tool_result = tools.create_calendar_event(
                 title=title,
-                date=today.strftime('%Y-%m-%d'),
+                date=today.strftime("%Y-%m-%d"),
                 time=time_str,
                 duration_hours=1
             )
-        else:
-            tool_result = "Could not parse time. Please specify a time like '11am' or '3:30pm'."
-    
-    # Check other tools
-    elif 'recent email' in message_lower or 'inbox' in message_lower:
-        tool_result = tools.get_recent_emails(5)
-    elif 'unread email' in message_lower:
-        tool_result = tools.search_emails_by_query('is:unread', 5)
-    elif 'today' in message_lower and ('schedule' in message_lower or 'meeting' in message_lower or 'event' in message_lower):
+
+    elif intent == "READ_CALENDAR":
         tool_result = tools.get_todays_schedule()
-    elif 'this week' in message_lower or 'upcoming' in message_lower:
-        tool_result = tools.get_upcoming_schedule(7)
-    
-    # Save user message
-    user_message = ChatMessage(
+
+    elif intent == "RESCHEDULE_EVENT":
+        tool_result = (
+            "⚠️ Rescheduling is supported, but I need the event reference.\n"
+            "Example: 'Reschedule my 11am meeting to 2pm'"
+        )
+
+    elif intent == "DELETE_EVENT":
+        tool_result = (
+            "⚠️ Deleting is supported, but I need the event reference.\n"
+            "Example: 'Cancel the cricket meeting'"
+        )
+
+    else:
+        tool_result = "I can help with meetings, emails, and schedules."
+
+    # ----------------------------
+    # SAVE USER MESSAGE
+    # ----------------------------
+
+    db.add(ChatMessage(
         user_id=current_user.id,
         role="user",
         content=chat_request.message
-    )
-    db.add(user_message)
+    ))
     db.commit()
-    
-    # Build prompt with tool result
-    if tool_result:
-        enhanced_prompt = f"User question: {chat_request.message}\n\nData from user's Gmail/Calendar:\n{tool_result}\n\nPlease provide a helpful summary and answer based on this information."
-    else:
-        enhanced_prompt = chat_request.message
-    
-    # Get LLM response
-    messages = [
-        SystemMessage(content="You are a helpful personal assistant. Summarize the data clearly and provide actionable insights."),
-        HumanMessage(content=enhanced_prompt)
-    ]
-    
-    try:
-        response = llm.invoke(messages)
-        assistant_content = response.content
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
-    
-    # Save assistant message
-    assistant_message = ChatMessage(
+
+    # ----------------------------
+    # LLM SUMMARY
+    # ----------------------------
+
+    prompt = f"""
+User request:
+{chat_request.message}
+
+Tool result:
+{tool_result}
+
+Respond clearly and helpfully.
+"""
+
+    response = llm.invoke([
+        SystemMessage(content="You are a helpful personal assistant."),
+        HumanMessage(content=prompt)
+    ])
+
+    assistant_msg = ChatMessage(
         user_id=current_user.id,
         role="assistant",
-        content=assistant_content
+        content=response.content
     )
-    db.add(assistant_message)
+    db.add(assistant_msg)
     db.commit()
-    db.refresh(assistant_message)
-    
+    db.refresh(assistant_msg)
+
     return {
-        "response": assistant_content,
-        "message_id": assistant_message.id
+        "response": response.content,
+        "message_id": assistant_msg.id
     }
 
+
+# ----------------------------
+# Chat History
+# ----------------------------
 
 @router.get("/history", response_model=list[ChatMessageResponse])
 def get_chat_history(
@@ -284,12 +239,13 @@ def get_chat_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    messages = db.query(ChatMessage)\
-        .filter(ChatMessage.user_id == current_user.id)\
-        .order_by(ChatMessage.created_at.desc())\
-        .limit(limit)\
+    messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.user_id == current_user.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
         .all()
-    
+    )
     return list(reversed(messages))
 
 
@@ -298,9 +254,7 @@ def clear_chat_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    db.query(ChatMessage)\
-        .filter(ChatMessage.user_id == current_user.id)\
-        .delete()
+    db.query(ChatMessage).filter(
+        ChatMessage.user_id == current_user.id
+    ).delete()
     db.commit()
-    
-    return None

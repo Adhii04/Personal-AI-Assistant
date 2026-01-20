@@ -178,6 +178,45 @@ class AgentTools:
             
         except Exception as e:
             return f"❌ Failed to create event: {str(e)}"
+        
+    def reschedule_meeting(
+    self,
+    event_id: str,
+    new_date: str,
+    new_time: str,
+    duration_hours: int = 1
+    ) -> str:
+        try:
+            from datetime import datetime, timedelta
+            from app.calendar_service import update_event
+
+            start = datetime.fromisoformat(f"{new_date}T{new_time}:00")
+            end = start + timedelta(hours=duration_hours)
+
+            event = update_event(
+                access_token=self.access_token,
+                event_id=event_id,
+                start_time=start.isoformat(),
+                end_time=end.isoformat()
+            )
+
+            return (
+                "✅ Meeting rescheduled\n"
+                f"Title: {event['summary']}\n"
+                f"New time: {start.strftime('%I:%M %p')}\n"
+                f"Link: {event['html_link']}"
+            )
+
+        except Exception as e:
+            return f"❌ Failed to reschedule meeting: {str(e)}"
+
+    def delete_meeting(self, event_id: str) -> str:
+        try:
+            from app.calendar_service import delete_event
+            return delete_event(self.access_token, event_id)
+        except Exception as e:
+            return f"❌ Failed to delete meeting: {str(e)}"
+
 
 
 def get_available_tools_description() -> str:

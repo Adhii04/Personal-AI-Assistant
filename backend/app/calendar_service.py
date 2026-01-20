@@ -326,3 +326,56 @@ def create_event(
             
         except Exception as e:
             raise Exception(f"Failed to create event: {str(e)}")
+        
+def update_event(
+    access_token: str,
+    event_id: str,
+    start_time: str,
+    end_time: str,
+    calendar_id: str = "primary"
+    ) -> Dict:
+        try:
+            service = create_calendar_service(access_token)
+
+            event = service.events().get(
+                calendarId=calendar_id,
+                eventId=event_id
+            ).execute()
+
+            event["start"]["dateTime"] = start_time
+            event["end"]["dateTime"] = end_time
+
+            updated_event = service.events().update(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=event
+            ).execute()
+
+            return {
+                "id": updated_event["id"],
+                "summary": updated_event.get("summary", ""),
+                "start": updated_event["start"]["dateTime"],
+                "end": updated_event["end"]["dateTime"],
+                "html_link": updated_event.get("htmlLink", "")
+            }
+
+        except Exception as e:
+            raise Exception(f"Failed to reschedule event: {str(e)}")
+
+def delete_event(
+    access_token: str,
+    event_id: str,
+    calendar_id: str = "primary"
+    ) -> str:
+        try:
+            service = create_calendar_service(access_token)
+
+            service.events().delete(
+                calendarId=calendar_id,
+                eventId=event_id
+            ).execute()
+
+            return "Event deleted successfully"
+
+        except Exception as e:
+            raise Exception(f"Failed to delete event: {str(e)}")
