@@ -34,14 +34,9 @@ app.include_router(gmail.router)
 app.include_router(calendar.router)
 
 
-@app.get("/")
-def root():
-    return {
-        "message": "Personal AI Assistant API",
-        "status": "running",
-        "version": "1.0.1",
-        "phase": "2 - Google OAuth"
-    }
+@app.get("/test-cors")
+def test_cors():
+    return {"message": "CORS is working"}
 
 
 @app.get("/health")
