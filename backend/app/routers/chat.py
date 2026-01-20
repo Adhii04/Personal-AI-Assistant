@@ -111,8 +111,14 @@ def send_message_with_tools(
         )
 
 
+    if not isinstance(state, dict):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent returned invalid state: {state}"
+        )
+
     tool_result = state.get("tool_result") or state.get("result", "")
-    memories = state.get("memories", [])
+    memories = state.get("memories") or []
 
     # ----------------------------
     # SAVE USER MESSAGE
