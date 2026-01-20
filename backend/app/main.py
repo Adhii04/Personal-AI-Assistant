@@ -4,6 +4,7 @@ from app.database import engine, Base
 from app.routers import auth, chat, google_auth, gmail, calendar
 from app.config import get_settings
 
+
 settings = get_settings()
 
 # Create tables
@@ -19,7 +20,11 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=[
+        "https://personal-ai-assistant-1-lxgi.onrender.com",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
