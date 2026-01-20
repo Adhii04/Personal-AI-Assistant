@@ -4,6 +4,8 @@ import re
 
 from langgraph.graph import StateGraph
 from app.agent_tools import AgentTools
+from langgraph.graph import END
+
 
 
 # ----------------------------
@@ -136,5 +138,7 @@ def build_agent(tools: AgentTools):
 
     graph.set_entry_point("detect_intent")
     graph.add_edge("detect_intent", "run_action")
+    graph.add_edge("run_action", END)
+
 
     return graph.compile()
