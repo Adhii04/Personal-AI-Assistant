@@ -96,14 +96,20 @@ def send_message_with_tools(
     # ----------------------------
     # RUN AGENT (IMPORTANT)
     # ----------------------------
-    state = agent.invoke({
-        "user_id": current_user.id,
-        "message": chat_request.message,
-        "intent": None,
-        "memories": None,
-        "tool_result": None,
-        "final_response": None
-    })
+    try:
+        state = agent.invoke({
+            "message": chat_request.message,
+            "intent": None,
+            "result": None,
+            "extracted_memory": None
+        })
+    except Exception as e:
+        print("AGENT ERROR:", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent execution failed: {str(e)}"
+        )
+
 
     tool_result = state.get("tool_result") or state.get("result", "")
     memories = state.get("memories", [])

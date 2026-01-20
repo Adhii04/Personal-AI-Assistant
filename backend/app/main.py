@@ -22,6 +22,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://personal-ai-assistant-1-lxgi.onrender.com",
+        "https://personal-ai-assistant-w6mi.onrender.com",
         "http://localhost:5173",
         "http://localhost:3000",
     ],
