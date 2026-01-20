@@ -1,20 +1,40 @@
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List
 from datetime import datetime
 import re
 
-from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, END
 from app.agent_tools import AgentTools
 
 
-# Agent State
+# ----------------------------
+# Agent State (MUST MATCH chat.py)
+# ----------------------------
 
 class AgentState(TypedDict):
     message: str
     intent: Optional[str]
     result: Optional[str]
+    extracted_memory: Optional[str]
+    memories: List[str]
 
 
+# ----------------------------
+# Entry Node (state safety)
+# ----------------------------
+
+def entry_node(state: AgentState) -> AgentState:
+    return {
+        "message": state.get("message", ""),
+        "intent": state.get("intent"),
+        "result": state.get("result"),
+        "extracted_memory": state.get("extracted_memory"),
+        "memories": state.get("memories", []),
+    }
+
+
+# ----------------------------
 # Intent Detection Node
+# ----------------------------
 
 def detect_intent(state: AgentState) -> AgentState:
     msg = state["message"].lower()
@@ -35,13 +55,13 @@ def detect_intent(state: AgentState) -> AgentState:
     else:
         intent = "CHAT"
 
-    return {
-        **state,
-        "intent": intent
-    }
+    state["intent"] = intent
+    return state
 
 
+# ----------------------------
 # Helper: extract time & title
+# ----------------------------
 
 def extract_time_and_title(message: str):
     time_match = re.search(
@@ -71,7 +91,9 @@ def extract_time_and_title(message: str):
     return time_str, title
 
 
-# Action Node (Tool Execution)
+# ----------------------------
+# Action Node (Tools)
+# ----------------------------
 
 def run_action(state: AgentState, tools: AgentTools) -> AgentState:
     intent = state["intent"]
@@ -95,35 +117,32 @@ def run_action(state: AgentState, tools: AgentTools) -> AgentState:
         result = tools.get_todays_schedule()
 
     elif intent == "RESCHEDULE_EVENT":
-        result = (
-            "⚠️ Rescheduling is supported, but I need the event reference.\n"
-            "Example: 'Reschedule my 11am meeting to 2pm'"
-        )
+        result = "⚠️ Please specify which meeting to reschedule."
 
     elif intent == "DELETE_EVENT":
-        result = (
-            "⚠️ Deleting is supported, but I need the event reference.\n"
-            "Example: 'Cancel the cricket meeting'"
-        )
+        result = "⚠️ Please specify which meeting to delete."
 
     else:
         result = "I can help with meetings, emails, and schedules."
 
-    return {
-        **state,
-        "result": result
-    }
+    state["result"] = result
+    return state
 
 
+# ----------------------------
 # Build LangGraph Agent
+# ----------------------------
 
 def build_agent(tools: AgentTools):
     graph = StateGraph(AgentState)
 
+    graph.add_node("entry", entry_node)
     graph.add_node("intent", detect_intent)
     graph.add_node("action", lambda state: run_action(state, tools))
 
-    graph.set_entry_point("intent")
+    graph.set_entry_point("entry")
+    graph.add_edge("entry", "intent")
     graph.add_edge("intent", "action")
+    graph.add_edge("action", END)
 
     return graph.compile()

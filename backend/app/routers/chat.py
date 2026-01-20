@@ -120,8 +120,7 @@ def send_message_with_tools(
     tool_result = state.get("tool_result") or state.get("result", "")
     memories = state.get("memories") or []
 
-    # ----------------------------
-    # SAVE USER MESSAGE
+    print("DEBUG: Saving message")
     # ----------------------------
     db.add(ChatMessage(
         user_id=current_user.id,
