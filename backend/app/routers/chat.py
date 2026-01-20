@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime
-import re
 
 from app.database import get_db
 from app.models import User, ChatMessage
@@ -9,14 +7,17 @@ from app.schemas import ChatRequest, ChatResponse, ChatMessageResponse
 from app.dependencies import get_current_user
 from app.config import get_settings
 from app.agent_tools import AgentTools
+from app.agent.graph import build_agent
 
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, AIMessage, SystemMessage
+from langchain.schema import HumanMessage, SystemMessage
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 settings = get_settings()
 
+# ----------------------------
 # Initialize LLM
+# ----------------------------
 if settings.openai_api_key:
     llm = ChatOpenAI(
         model=settings.openai_model,
@@ -29,63 +30,8 @@ else:
 
 
 # ----------------------------
-# Helpers
+# CHAT (LLM ONLY)
 # ----------------------------
-
-def detect_intent(message: str) -> str:
-    msg = message.lower()
-
-    if any(w in msg for w in ["add", "create", "schedule"]) and \
-       any(w in msg for w in ["meeting", "event", "appointment"]):
-        return "CREATE_EVENT"
-
-    if any(w in msg for w in ["reschedule", "move"]):
-        return "RESCHEDULE_EVENT"
-
-    if any(w in msg for w in ["delete", "cancel"]):
-        return "DELETE_EVENT"
-
-    if any(w in msg for w in ["schedule", "calendar", "meeting", "event"]):
-        return "READ_CALENDAR"
-
-    return "CHAT"
-
-
-def extract_time_and_title(message: str):
-    """
-    Extract time (11am / 3:30pm) and title (for cricket match)
-    """
-    msg = message.lower()
-
-    # Time
-    time_match = re.search(r'\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b', msg)
-    if not time_match:
-        return None, None
-
-    hour = int(time_match.group(1))
-    minute = int(time_match.group(2)) if time_match.group(2) else 0
-    period = time_match.group(3)
-
-    if period == "pm" and hour < 12:
-        hour += 12
-    if period == "am" and hour == 12:
-        hour = 0
-
-    time_str = f"{hour:02d}:{minute:02d}"
-
-    # Title
-    title = "Meeting"
-    title_match = re.search(r'for\s+(.+)', message, re.IGNORECASE)
-    if title_match:
-        title = title_match.group(1).strip()
-
-    return time_str, title
-
-
-# ----------------------------
-# Chat (LLM only)
-# ----------------------------
-
 @router.post("/message", response_model=ChatResponse)
 def send_message(
     chat_request: ChatRequest,
@@ -95,20 +41,18 @@ def send_message(
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
 
-    user_msg = ChatMessage(
+    # Save user message
+    db.add(ChatMessage(
         user_id=current_user.id,
         role="user",
         content=chat_request.message
-    )
-    db.add(user_msg)
+    ))
     db.commit()
 
-    messages = [
+    response = llm.invoke([
         SystemMessage(content="You are a helpful personal AI assistant."),
         HumanMessage(content=chat_request.message)
-    ]
-
-    response = llm.invoke(messages)
+    ])
 
     assistant_msg = ChatMessage(
         user_id=current_user.id,
@@ -126,9 +70,8 @@ def send_message(
 
 
 # ----------------------------
-# Chat WITH TOOLS (Agent)
+# CHAT WITH TOOLS + MEMORY (AGENT)
 # ----------------------------
-
 @router.post("/message/tools", response_model=ChatResponse)
 def send_message_with_tools(
     chat_request: ChatRequest,
@@ -144,50 +87,30 @@ def send_message_with_tools(
             detail="Please connect your Google account"
         )
 
+    # Initialize tools
     tools = AgentTools(current_user.google_access_token)
-    intent = detect_intent(chat_request.message)
-    tool_result = None
+
+    # Build LangGraph agent
+    agent = build_agent(tools)
 
     # ----------------------------
-    # INTENT EXECUTION
+    # RUN AGENT (IMPORTANT)
     # ----------------------------
+    state = agent.invoke({
+        "user_id": current_user.id,
+        "message": chat_request.message,
+        "intent": None,
+        "memories": None,
+        "tool_result": None,
+        "final_response": None
+    })
 
-    if intent == "CREATE_EVENT":
-        time_str, title = extract_time_and_title(chat_request.message)
-
-        if not time_str:
-            tool_result = "❌ I couldn't understand the time. Try: 'Add meeting at 11am'"
-        else:
-            today = datetime.now()
-            tool_result = tools.create_calendar_event(
-                title=title,
-                date=today.strftime("%Y-%m-%d"),
-                time=time_str,
-                duration_hours=1
-            )
-
-    elif intent == "READ_CALENDAR":
-        tool_result = tools.get_todays_schedule()
-
-    elif intent == "RESCHEDULE_EVENT":
-        tool_result = (
-            "⚠️ Rescheduling is supported, but I need the event reference.\n"
-            "Example: 'Reschedule my 11am meeting to 2pm'"
-        )
-
-    elif intent == "DELETE_EVENT":
-        tool_result = (
-            "⚠️ Deleting is supported, but I need the event reference.\n"
-            "Example: 'Cancel the cricket meeting'"
-        )
-
-    else:
-        tool_result = "I can help with meetings, emails, and schedules."
+    tool_result = state.get("tool_result") or state.get("result", "")
+    memories = state.get("memories", [])
 
     # ----------------------------
     # SAVE USER MESSAGE
     # ----------------------------
-
     db.add(ChatMessage(
         user_id=current_user.id,
         role="user",
@@ -196,21 +119,26 @@ def send_message_with_tools(
     db.commit()
 
     # ----------------------------
-    # LLM SUMMARY
+    # BUILD FINAL PROMPT (WITH MEMORY)
     # ----------------------------
+    memory_text = ""
+    if memories:
+        memory_text = "\nUser Memory:\n" + "\n".join(f"- {m}" for m in memories)
 
     prompt = f"""
 User request:
 {chat_request.message}
 
+{memory_text}
+
 Tool result:
 {tool_result}
 
-Respond clearly and helpfully.
+Respond clearly and helpfully, using the user's memory when relevant.
 """
 
     response = llm.invoke([
-        SystemMessage(content="You are a helpful personal assistant."),
+        SystemMessage(content="You are a helpful personal AI assistant."),
         HumanMessage(content=prompt)
     ])
 
@@ -230,9 +158,8 @@ Respond clearly and helpfully.
 
 
 # ----------------------------
-# Chat History
+# CHAT HISTORY
 # ----------------------------
-
 @router.get("/history", response_model=list[ChatMessageResponse])
 def get_chat_history(
     limit: int = 50,

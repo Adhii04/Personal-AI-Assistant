@@ -19,3 +19,6 @@ google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.116.0
 pytz==2024.1
+
+# LangGraph for agent graphs
+langgraph==0.0.48

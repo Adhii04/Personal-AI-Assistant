@@ -34,3 +34,23 @@ class ChatMessage(Base):
     
     # Relationship
     user = relationship("User", back_populates="messages")
+
+class AgentMemory(Base):
+    __tablename__ = "agent_memory"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+
+    # memory_type examples:
+    # preference, project_status, habit, style
+    memory_type = Column(String(50), index=True)
+
+    # short label
+    key = Column(String(100), index=True)
+
+    # natural language value
+    value = Column(Text)
+
+    source = Column(String(50))  # chat | email | system
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
