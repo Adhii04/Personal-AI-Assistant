@@ -9,6 +9,8 @@ from app.config import get_settings
 from app.agent_tools import AgentTools
 from app.agent.graph import build_agent
 from app.memory.loader import load_user_memories
+from app.memory.store import store_user_memory
+
 
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
@@ -50,7 +52,11 @@ def send_message(
     db.commit()
 
     response = llm.invoke([
-        SystemMessage(content="You are a helpful personal AI assistant."),
+        SystemMessage(content=(
+            "You are a helpful personal AI assistant. "
+            "You have access to the user's stored preferences and memories. "
+            "If the user asks about their preferences, explicitly list what you remember."
+        )),
         HumanMessage(content=chat_request.message),
     ])
 
@@ -83,6 +89,13 @@ def send_message_with_tools(
 
     if not current_user.is_google_connected or not current_user.google_access_token:
         raise HTTPException(status_code=403, detail="Please connect your Google account")
+
+    # 🔥🔥🔥 ADD MEMORY STORE HERE 🔥🔥🔥
+    if "prefer" in chat_request.message.lower():
+        store_user_memory(
+            user_id=current_user.id,
+            value=chat_request.message
+        )
 
     # -------- Run LangGraph Agent --------
     tools = AgentTools(current_user.google_access_token)
