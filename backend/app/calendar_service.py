@@ -268,3 +268,61 @@ def search_events(
         
     except Exception as e:
         raise Exception(f"Failed to search events: {str(e)}")
+    
+    def create_event(
+    access_token: str,
+    summary: str,
+    start_time: str,
+    end_time: str,
+    description: str = "",
+    location: str = "",
+    calendar_id: str = 'primary'
+    ) -> Dict:
+        """
+        Create a new calendar event
+        
+        Args:
+            access_token: Google OAuth access token
+            summary: Event title
+            start_time: Start time in ISO format (e.g., "2026-01-20T11:00:00")
+            end_time: End time in ISO format
+            description: Event description
+            location: Event location
+            calendar_id: Calendar ID (default 'primary')
+        
+        Returns:
+            Created event details
+        """
+    try:
+        service = create_calendar_service(access_token)
+        
+        event = {
+            'summary': summary,
+            'location': location,
+            'description': description,
+            'start': {
+                'dateTime': start_time,
+                'timeZone': 'UTC',
+            },
+            'end': {
+                'dateTime': end_time,
+                'timeZone': 'UTC',
+            },
+        }
+        
+        created_event = service.events().insert(
+            calendarId=calendar_id,
+            body=event
+        ).execute()
+        
+        return {
+            'id': created_event['id'],
+            'summary': created_event.get('summary', ''),
+            'start': created_event['start'].get('dateTime', ''),
+            'end': created_event['end'].get('dateTime', ''),
+            'html_link': created_event.get('htmlLink', ''),
+            'status': 'created'
+        }
+        
+    except Exception as e:
+        raise Exception(f"Failed to create event: {str(e)}")

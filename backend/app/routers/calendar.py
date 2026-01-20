@@ -9,7 +9,8 @@ from app.schemas import (
     CalendarEvent,
     CalendarEventDetails,
     EventSearchQuery,
-    EventsTimeRange
+    EventsTimeRange,
+    CreateEventRequest
 )
 from app.dependencies import get_current_user
 from app.calendar_service import (
@@ -20,6 +21,7 @@ from app.calendar_service import (
     get_week_events,
     search_events
 )
+from datetime import datetime, timedelta
 
 router = APIRouter(prefix="/calendar", tags=["Calendar"])
 
@@ -189,4 +191,74 @@ def search_calendar_events(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search events: {str(e)}"
+        )
+
+@router.post("/events/create")
+def create_calendar_event(
+    event_data: CreateEventRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new calendar event
+    
+    Request body:
+    {
+        "summary": "Meeting Title",
+        "start_time": "2026-01-20T11:00:00",
+        "end_time": "2026-01-20T12:00:00",
+        "description": "Meeting description",
+        "location": "Conference Room"
+    }
+    """
+    check_google_connected(current_user)
+    
+    try:
+        from app.calendar_service import create_event
+        
+        event = create_event(
+            access_token=current_user.google_access_token,
+            summary=event_data.summary,
+            start_time=event_data.start_time,
+            end_time=event_data.end_time,
+            description=event_data.description,
+            location=event_data.location,
+            calendar_id=event_data.calendar_id
+        )
+        return {
+            "message": "Event created successfully",
+            "event": event
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create event: {str(e)}"
+        )
+
+@router.post("/events/range", response_model=List[CalendarEvent])
+def get_events_in_range(
+    time_range: EventsTimeRange,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get events within a custom time range
+    """
+    check_google_connected(current_user)
+
+    try:
+        from app.calendar_service import get_events_by_time_range
+
+        events = get_events_by_time_range(
+            access_token=current_user.google_access_token,
+            start_time=time_range.start_time,
+            end_time=time_range.end_time,
+            calendar_id=time_range.calendar_id,
+            max_results=time_range.max_results
+        )
+        return events
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch events in range: {str(e)}"
         )

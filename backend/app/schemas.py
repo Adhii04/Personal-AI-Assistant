@@ -169,3 +169,11 @@ class EventSearchQuery(BaseModel):
 class EventsTimeRange(BaseModel):
     calendar_id: str = 'primary'
     max_results: int = 10
+
+class CreateEventRequest(BaseModel):
+    summary: str
+    start_time: str
+    end_time: str
+    description: str = ""
+    location: str = ""
+    calendar_id: str = 'primary'

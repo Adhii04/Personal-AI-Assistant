@@ -182,7 +182,51 @@ def send_message_with_tools(
     message_lower = chat_request.message.lower()
     tool_result = None
     
-    if 'recent email' in message_lower or 'inbox' in message_lower:
+    # Check for calendar event creation FIRST
+    if ('add' in message_lower or 'create' in message_lower or 'schedule' in message_lower) and \
+       ('meeting' in message_lower or 'event' in message_lower or 'appointment' in message_lower):
+        # Import datetime for event creation
+        from datetime import datetime
+        
+        # Try to extract time (e.g., "11am", "11:00", "3pm")
+        time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', message_lower)
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2)) if time_match.group(2) else 0
+            period = time_match.group(3)
+            
+            # Convert to 24-hour format
+            if period == 'pm' and hour < 12:
+                hour += 12
+            elif period == 'am' and hour == 12:
+                hour = 0
+            
+            # Use today's date
+            today = datetime.now()
+            time_str = f"{hour:02d}:{minute:02d}"
+            
+            # Extract event title
+            title = "Meeting"
+            title_match = re.search(r'for\s+([^at]+?)(?:\s+at|\s*$)', chat_request.message, re.IGNORECASE)
+            if title_match:
+                title = title_match.group(1).strip()
+            else:
+                title_match = re.search(r'(?:add|create|schedule)\s+(?:a\s+)?(?:meeting|event)?\s*(?:for)?\s+([^at]+)', chat_request.message, re.IGNORECASE)
+                if title_match:
+                    title = title_match.group(1).strip()
+            
+            # Create the event
+            tool_result = tools.create_calendar_event(
+                title=title,
+                date=today.strftime('%Y-%m-%d'),
+                time=time_str,
+                duration_hours=1
+            )
+        else:
+            tool_result = "Could not parse time. Please specify a time like '11am' or '3:30pm'."
+    
+    # Check other tools
+    elif 'recent email' in message_lower or 'inbox' in message_lower:
         tool_result = tools.get_recent_emails(5)
     elif 'unread email' in message_lower:
         tool_result = tools.search_emails_by_query('is:unread', 5)

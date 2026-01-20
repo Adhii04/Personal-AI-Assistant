@@ -173,3 +173,42 @@ User: "Do I have any meetings today?"
 User: "Any emails from my boss?"
 → Use search_emails_by_query("from:boss@company.com", 5)
 """
+
+def create_calendar_event(
+    self,
+    title: str,
+    date: str,
+    time: str,
+    duration_hours: int = 1
+) -> str:
+    """
+    Create a calendar event
+    
+    Args:
+        title: Event title
+        date: Date in format "2026-01-20"
+        time: Time in format "11:00"
+        duration_hours: Event duration in hours
+    """
+    try:
+        from app.calendar_service import create_event
+        from datetime import datetime, timedelta
+        
+        # Parse date and time
+        start_datetime = datetime.fromisoformat(f"{date}T{time}:00")
+        end_datetime = start_datetime + timedelta(hours=duration_hours)
+        
+        event = create_event(
+            access_token=self.access_token,
+            summary=title,
+            start_time=start_datetime.isoformat(),
+            end_time=end_datetime.isoformat()
+        )
+        
+        return f"✅ Event created successfully!\n" \
+               f"Title: {title}\n" \
+               f"Time: {start_datetime.strftime('%B %d, %Y at %I:%M %p')}\n" \
+               f"Link: {event['html_link']}"
+        
+    except Exception as e:
+        return f"❌ Failed to create event: {str(e)}"
