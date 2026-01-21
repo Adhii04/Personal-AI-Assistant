@@ -16,6 +16,7 @@ class AgentState(TypedDict):
     message: str
     intent: Optional[str]
     result: Optional[str]
+    memories: list[str]
 
 
 # ----------------------------
@@ -86,12 +87,22 @@ def extract_time_and_title(message: str):
 def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
     intent = state["intent"]
     message = state["message"]
+    memories = state.get("memories", [])
+
+    preferred_time = None
+    for m in memories:
+        if "after 6" in m.lower():
+            preferred_time = "18:00"
 
     if intent == "CREATE_EVENT":
         time_str, title = extract_time_and_title(message)
 
+        if not time_str and preferred_time:
+            time_str = preferred_time
+            title = title or "Meeting (preferred time)"
+
         if not time_str:
-            result = "❌ I couldn't understand the time. Try: 'Add meeting at 11am'"
+            result = "❌ I couldn't understand the time."
         else:
             today = datetime.now()
             result = tools.create_calendar_event(
@@ -99,7 +110,7 @@ def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
                 date=today.strftime("%Y-%m-%d"),
                 time=time_str,
                 duration_hours=1
-            )
+            ) 
 
     elif intent == "READ_CALENDAR":
         result = tools.get_todays_schedule()

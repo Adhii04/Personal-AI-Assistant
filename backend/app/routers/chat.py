@@ -102,10 +102,12 @@ def send_message_with_tools(
     agent = build_agent(tools)
 
     try:
+        memories = load_user_memories(current_user.id)
         state = agent.invoke({
             "message": chat_request.message,
             "intent": None,
             "result": None,
+            "memories": memories,   # ✅ PASS MEMORY
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
