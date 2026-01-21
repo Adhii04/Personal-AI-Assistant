@@ -1,4 +1,4 @@
-# app/agent/graph.py (UPDATED)
+# app/agent/graph.py (FIXED)
 from typing import TypedDict, Optional, List
 from datetime import datetime, timedelta
 import re
@@ -17,13 +17,14 @@ class AgentState(TypedDict):
     intent: Optional[str]
     result: Optional[str]
     
-    # NEW: Reasoning state
+    # Reasoning state
     belief_state: Optional[BeliefState]
-    target_date: Optional[str]  # ISO format
+    target_date: Optional[str]
     proposed_time: Optional[str]
     conflicts: Optional[List[tuple[TimeConstraint, TimeConstraint]]]
     needs_clarification: bool
     clarification_question: Optional[str]
+    user_override_time: Optional[str]  # NEW: User explicitly specified time
 
 
 # ----------------------------
@@ -35,57 +36,91 @@ def detect_intent_node(state: AgentState) -> AgentState:
     msg = state["message"].lower()
     
     # Detect intent
-    if any(w in msg for w in ["add", "create", "schedule"]) and \
-       any(w in msg for w in ["meeting", "event", "appointment"]):
-        intent = "CREATE_EVENT"
-    elif any(w in msg for w in ["reschedule", "move"]):
+    intent = "CHAT"
+    
+    if any(w in msg for w in ["reschedule", "move", "change"]):
         intent = "RESCHEDULE_EVENT"
-    elif any(w in msg for w in ["delete", "cancel"]):
+    elif any(w in msg for w in ["delete", "cancel", "remove"]):
         intent = "DELETE_EVENT"
-    elif any(w in msg for w in ["calendar", "schedule", "meeting", "event"]):
-        intent = "READ_CALENDAR"
-    else:
-        intent = "CHAT"
+    elif any(w in msg for w in ["calendar", "schedule", "meeting", "event"]) and \
+         not any(w in msg for w in ["reschedule", "delete", "cancel"]):
+        # Check if it's reading or creating
+        if any(w in msg for w in ["show", "what", "list", "view", "today", "tomorrow"]) and \
+           not any(w in msg for w in ["schedule", "create", "add"]):
+            intent = "READ_CALENDAR"
+        elif any(w in msg for w in ["add", "create", "schedule", "book"]):
+            intent = "CREATE_EVENT"
     
     # Extract target date for CREATE_EVENT
     target_date = None
+    user_override_time = None
+    
     if intent == "CREATE_EVENT":
         if "tomorrow" in msg:
             target_date = (datetime.now() + timedelta(days=1)).date().isoformat()
         elif "today" in msg:
             target_date = datetime.now().date().isoformat()
         else:
-            target_date = datetime.now().date().isoformat()  # default to today
+            target_date = datetime.now().date().isoformat()
+        
+        # Check if user specified a time explicitly (overrides preferences)
+        # "schedule it before 2pm" or "at 1pm" or "for 3pm"
+        time_patterns = [
+            r'(?:before|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?',
+            r'(?:at|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?',
+        ]
+        
+        for pattern in time_patterns:
+            time_match = re.search(pattern, msg)
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2)) if time_match.group(2) else 0
+                period = time_match.group(3)
+                
+                if period == "pm" and hour < 12:
+                    hour += 12
+                elif period == "am" and hour == 12:
+                    hour = 0
+                
+                # If "before X", schedule 1 hour before
+                if "before" in msg or "by" in msg:
+                    hour = max(9, hour - 1)
+                
+                user_override_time = f"{hour:02d}:{minute:02d}"
+                break
     
     return {
         **state,
         "intent": intent,
         "target_date": target_date,
+        "user_override_time": user_override_time,
         "needs_clarification": False,
         "clarification_question": None
     }
 
 
 # ----------------------------
-# Reasoning Node (THE KEY INNOVATION)
+# Reasoning Node
 # ----------------------------
 
 def reason_about_constraints_node(state: AgentState) -> AgentState:
     """
-    This is the THINKING layer that makes the agent intelligent.
-    
-    It:
-    1. Analyzes beliefs
-    2. Detects conflicts
-    3. Proposes times OR asks for clarification
-    4. Explains reasoning
+    This is the THINKING layer.
+    Handles user overrides and conflict detection.
     """
     if state["intent"] != "CREATE_EVENT":
-        return state  # Skip reasoning for non-scheduling intents
+        return state
+    
+    # If user explicitly specified a time, use it (no reasoning needed)
+    if state.get("user_override_time"):
+        return {
+            **state,
+            "proposed_time": state["user_override_time"],
+            "needs_clarification": False
+        }
     
     belief_state = state.get("belief_state")
     if not belief_state:
-        # No preferences at all - ask user
         return {
             **state,
             "needs_clarification": True,
@@ -98,8 +133,7 @@ def reason_about_constraints_node(state: AgentState) -> AgentState:
     conflicts = belief_state.detect_conflicts(target_date)
     
     if conflicts:
-        # Build clarification message
-        c1, c2 = conflicts[0]  # Show first conflict
+        c1, c2 = conflicts[0]
         question = (
             f"🤔 I found conflicting preferences:\n\n"
             f"• \"{c1.original_text}\"\n"
@@ -113,7 +147,7 @@ def reason_about_constraints_node(state: AgentState) -> AgentState:
             "conflicts": conflicts
         }
     
-    # No conflicts - try to propose a time
+    # No conflicts - propose a time
     proposed_time = belief_state.propose_time(target_date)
     
     if not proposed_time:
@@ -137,14 +171,11 @@ def reason_about_constraints_node(state: AgentState) -> AgentState:
 
 
 # ----------------------------
-# Action Node (NOW TRULY AGENTIC)
+# Action Node
 # ----------------------------
 
 def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
-    """
-    Execute action ONLY if reasoning layer approved.
-    Always explains the reasoning behind decisions.
-    """
+    """Execute action with proper error handling"""
     intent = state["intent"]
     message = state["message"]
     
@@ -158,7 +189,7 @@ def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
     if intent == "CREATE_EVENT":
         # Extract meeting title
         title_match = re.search(
-            r'(?:for|about|regarding)\s+(.+?)(?:\s+tomorrow|\s+today|$)',
+            r'(?:meeting|event)(?:\s+for|\s+about|\s+regarding)?\s+(.+?)(?:\s+tomorrow|\s+today|\s+at|\s+before|\s+after|$)',
             message,
             re.IGNORECASE
         )
@@ -172,21 +203,25 @@ def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
             }
         
         # Execute the action
-        result = tools.create_calendar_event(
-            title=title,
-            date=state["target_date"],
-            time=proposed_time,
-            duration_hours=1
-        )
-        
-        # Add reasoning explanation
-        belief_state = state.get("belief_state")
-        if belief_state:
-            target_date = datetime.fromisoformat(state["target_date"]).date()
-            explanation = belief_state.explain_reasoning(target_date, proposed_time)
-            result += f"\n\n💡 {explanation}"
-        
-        return {**state, "result": result}
+        try:
+            result = tools.create_calendar_event(
+                title=title,
+                date=state["target_date"],
+                time=proposed_time,
+                duration_hours=1
+            )
+            
+            # Add reasoning explanation (only if not user override)
+            if not state.get("user_override_time"):
+                belief_state = state.get("belief_state")
+                if belief_state:
+                    target_date = datetime.fromisoformat(state["target_date"]).date()
+                    explanation = belief_state.explain_reasoning(target_date, proposed_time)
+                    result += f"\n\n💡 {explanation}"
+            
+            return {**state, "result": result}
+        except Exception as e:
+            return {**state, "result": f"❌ Failed to create event: {str(e)}"}
     
     elif intent == "READ_CALENDAR":
         return {**state, "result": tools.get_todays_schedule()}
@@ -195,7 +230,9 @@ def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
         return {
             **state,
             "result": (
-                "⚠️ Rescheduling needs an event reference.\n"
+                "⚠️ To reschedule, I need to know:\n"
+                "1. Which meeting to reschedule (e.g., 'the 11am meeting' or 'cricket meeting')\n"
+                "2. What time to move it to\n\n"
                 "Example: 'Reschedule my 11am meeting to 2pm'"
             )
         }
@@ -204,15 +241,15 @@ def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
         return {
             **state,
             "result": (
-                "⚠️ Deleting needs an event reference.\n"
-                "Example: 'Cancel the cricket meeting'"
+                "⚠️ To cancel, I need to know which meeting.\n"
+                "Example: 'Cancel the cricket meeting' or 'Delete my 2pm meeting'"
             )
         }
     
     else:
         return {
             **state,
-            "result": "I can help with meetings, emails, and schedules. What would you like to do?"
+            "result": "I can help with scheduling meetings, viewing your calendar, and managing events. What would you like to do?"
         }
 
 
