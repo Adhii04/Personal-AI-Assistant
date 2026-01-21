@@ -35,21 +35,25 @@ def detect_intent_node(state: AgentState) -> AgentState:
     """Detect intent AND extract temporal context"""
     msg = state["message"].lower()
     
-    # Detect intent
+    # Detect intent with better logic
     intent = "CHAT"
     
-    if any(w in msg for w in ["reschedule", "move", "change"]):
+    # Priority 1: Reading/viewing intents (check first)
+    if any(phrase in msg for phrase in ["what's my", "what is my", "show my", "list my", "view my", "get my", "check my", "tell me what"]):
+        intent = "READ_CALENDAR"
+    elif any(phrase in msg for phrase in ["do i have", "any meetings", "my schedule", "my calendar"]) and \
+         not any(w in msg for w in ["schedule a", "create a", "add a"]):
+        intent = "READ_CALENDAR"
+    # Priority 2: Modification intents
+    elif any(w in msg for w in ["reschedule", "move", "change"]) and any(w in msg for w in ["meeting", "event"]):
         intent = "RESCHEDULE_EVENT"
-    elif any(w in msg for w in ["delete", "cancel", "remove"]):
+    elif any(w in msg for w in ["delete", "cancel", "remove"]) and any(w in msg for w in ["meeting", "event"]):
         intent = "DELETE_EVENT"
-    elif any(w in msg for w in ["calendar", "schedule", "meeting", "event"]) and \
-         not any(w in msg for w in ["reschedule", "delete", "cancel"]):
-        # Check if it's reading or creating
-        if any(w in msg for w in ["show", "what", "list", "view", "today", "tomorrow"]) and \
-           not any(w in msg for w in ["schedule", "create", "add"]):
-            intent = "READ_CALENDAR"
-        elif any(w in msg for w in ["add", "create", "schedule", "book"]):
-            intent = "CREATE_EVENT"
+    # Priority 3: Creation intents
+    elif any(phrase in msg for phrase in ["schedule a", "schedule the", "create a", "create the", "add a", "add the", "book a", "book the"]):
+        intent = "CREATE_EVENT"
+    elif any(phrase in msg for phrase in ["schedule meeting", "create meeting", "add meeting", "book meeting"]):
+        intent = "CREATE_EVENT"
     
     # Extract target date for CREATE_EVENT
     target_date = None
@@ -64,7 +68,6 @@ def detect_intent_node(state: AgentState) -> AgentState:
             target_date = datetime.now().date().isoformat()
         
         # Check if user specified a time explicitly (overrides preferences)
-        # "schedule it before 2pm" or "at 1pm" or "for 3pm"
         time_patterns = [
             r'(?:before|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?',
             r'(?:at|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?',
@@ -88,6 +91,15 @@ def detect_intent_node(state: AgentState) -> AgentState:
                 
                 user_override_time = f"{hour:02d}:{minute:02d}"
                 break
+    
+    elif intent == "READ_CALENDAR":
+        # Extract what timeframe they're asking about
+        if "tomorrow" in msg:
+            target_date = (datetime.now() + timedelta(days=1)).date().isoformat()
+        elif "today" in msg:
+            target_date = datetime.now().date().isoformat()
+        else:
+            target_date = datetime.now().date().isoformat()  # default to today
     
     return {
         **state,
@@ -151,7 +163,6 @@ def reason_about_constraints_node(state: AgentState) -> AgentState:
     proposed_time = belief_state.propose_time(target_date)
     
     if not proposed_time:
-        # Couldn't find a valid time
         active_constraints = belief_state.get_active_constraints(target_date)
         constraint_text = "\n".join(f"• {c.original_text}" for c in active_constraints[:3])
         return {
@@ -224,7 +235,23 @@ def run_action_node(state: AgentState, tools: AgentTools) -> AgentState:
             return {**state, "result": f"❌ Failed to create event: {str(e)}"}
     
     elif intent == "READ_CALENDAR":
-        return {**state, "result": tools.get_todays_schedule()}
+        try:
+            target_date = datetime.fromisoformat(state["target_date"]).date()
+            
+            # Get schedule for the requested date
+            schedule = tools.get_schedule_for_date(target_date.isoformat())
+            
+            # Format the response nicely
+            if not schedule or "No events" in schedule:
+                date_str = "today" if target_date == datetime.now().date() else "tomorrow"
+                result = f"📅 You have no meetings scheduled for {date_str}."
+            else:
+                date_str = "Today" if target_date == datetime.now().date() else "Tomorrow"
+                result = f"📅 {date_str}'s schedule:\n\n{schedule}"
+            
+            return {**state, "result": result}
+        except Exception as e:
+            return {**state, "result": f"❌ Failed to fetch schedule: {str(e)}"}
     
     elif intent == "RESCHEDULE_EVENT":
         return {
@@ -261,12 +288,10 @@ def build_agent(tools: AgentTools, belief_state: BeliefState):
     """Build the agent with reasoning capability"""
     graph = StateGraph(AgentState)
     
-    # Add nodes
     graph.add_node("detect_intent", detect_intent_node)
     graph.add_node("reason_about_constraints", reason_about_constraints_node)
     graph.add_node("run_action", lambda state: run_action_node(state, tools))
     
-    # Define flow
     graph.set_entry_point("detect_intent")
     graph.add_edge("detect_intent", "reason_about_constraints")
     graph.add_edge("reason_about_constraints", "run_action")
