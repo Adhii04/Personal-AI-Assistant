@@ -1,3 +1,5 @@
+# app/routers/chat.py (UPDATED /message/tools endpoint)
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -8,9 +10,8 @@ from app.dependencies import get_current_user
 from app.config import get_settings
 from app.agent_tools import AgentTools
 from app.agent.graph import build_agent
-from app.memory.loader import load_user_memories
 from app.memory.store import store_user_memory
-
+from app.memory.interpreter import build_belief_state
 
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
@@ -18,9 +19,7 @@ from langchain.schema import HumanMessage, SystemMessage
 router = APIRouter(prefix="/chat", tags=["Chat"])
 settings = get_settings()
 
-# ----------------------------
 # Initialize LLM
-# ----------------------------
 if settings.openai_api_key:
     llm = ChatOpenAI(
         model=settings.openai_model,
@@ -33,50 +32,7 @@ else:
 
 
 # ----------------------------
-# CHAT (LLM ONLY)
-# ----------------------------
-@router.post("/message", response_model=ChatResponse)
-def send_message(
-    chat_request: ChatRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not llm:
-        raise HTTPException(status_code=500, detail="LLM not configured")
-
-    db.add(ChatMessage(
-        user_id=current_user.id,
-        role="user",
-        content=chat_request.message,
-    ))
-    db.commit()
-
-    response = llm.invoke([
-        SystemMessage(content=(
-            "You are a helpful personal AI assistant. "
-            "You have access to the user's stored preferences and memories. "
-            "If the user asks about their preferences, explicitly list what you remember."
-        )),
-        HumanMessage(content=chat_request.message),
-    ])
-
-    assistant_msg = ChatMessage(
-        user_id=current_user.id,
-        role="assistant",
-        content=response.content,
-    )
-    db.add(assistant_msg)
-    db.commit()
-    db.refresh(assistant_msg)
-
-    return {
-        "response": response.content,
-        "message_id": assistant_msg.id,
-    }
-
-
-# ----------------------------
-# CHAT WITH TOOLS + MEMORY
+# CHAT WITH TOOLS + MEMORY + REASONING
 # ----------------------------
 @router.post("/message/tools", response_model=ChatResponse)
 def send_message_with_tools(
@@ -84,21 +40,33 @@ def send_message_with_tools(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Enhanced chat endpoint with reasoning capability.
+    
+    The agent now:
+    1. Stores memories
+    2. Interprets memories as beliefs
+    3. Reasons about conflicts
+    4. Asks for clarification when needed
+    5. Explains decisions
+    """
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
     
     if not current_user.is_google_connected or not current_user.google_access_token:
         raise HTTPException(status_code=403, detail="Please connect your Google account")
     
-    # Store memory if detected
-    if "prefer" in chat_request.message.lower() or "hate" in chat_request.message.lower():
+    # --- 1. Store Memory if Detected ---
+    message_lower = chat_request.message.lower()
+    memory_keywords = ["prefer", "hate", "like", "don't like", "never", "always", "usually"]
+    
+    if any(keyword in message_lower for keyword in memory_keywords):
         store_user_memory(user_id=current_user.id, value=chat_request.message)
     
-    # Build belief state from ALL memories
-    from app.memory.interpreter import build_belief_state
+    # --- 2. Build Belief State from ALL Memories ---
     belief_state = build_belief_state(current_user.id)
     
-    # Run agent with reasoning
+    # --- 3. Run Agent with Reasoning ---
     tools = AgentTools(current_user.google_access_token)
     agent = build_agent(tools, belief_state)
     
@@ -119,40 +87,93 @@ def send_message_with_tools(
     
     tool_result = state.get("result", "")
     
-    # Save messages
-    db.add(ChatMessage(user_id=current_user.id, role="user", content=chat_request.message))
+    # --- 4. Save User Message ---
+    db.add(ChatMessage(
+        user_id=current_user.id,
+        role="user",
+        content=chat_request.message
+    ))
     db.commit()
     
-    # Final LLM response (now with context)
-    prompt = f"""
+    # --- 5. Generate Natural Language Response ---
+    # If the agent already provided a good response, use it directly
+    if state.get("needs_clarification") or "💡" in tool_result:
+        # Agent already formatted a good response
+        final_response = tool_result
+    else:
+        # Let LLM polish the response
+        prompt = f"""
 User request: {chat_request.message}
 
-Agent analysis and action: {tool_result}
+Agent result: {tool_result}
 
-Respond naturally, acknowledging any reasoning the agent provided.
+Respond naturally and helpfully, acknowledging the action taken.
+Keep it brief and conversational.
 """
+        
+        llm_response = llm.invoke([
+            SystemMessage(content="You are a helpful personal AI assistant."),
+            HumanMessage(content=prompt)
+        ])
+        final_response = llm_response.content
     
-    response = llm.invoke([
-        SystemMessage(content="You are a helpful personal AI assistant."),
-        HumanMessage(content=prompt)
-    ])
-    
+    # --- 6. Save Assistant Message ---
     assistant_msg = ChatMessage(
         user_id=current_user.id,
         role="assistant",
-        content=response.content
+        content=final_response
     )
     db.add(assistant_msg)
     db.commit()
     db.refresh(assistant_msg)
     
-    return {"response": response.content, "message_id": assistant_msg.id}
-
+    return {
+        "response": final_response,
+        "message_id": assistant_msg.id
+    }
 
 
 # ----------------------------
-# CHAT HISTORY
+# OTHER ENDPOINTS (unchanged)
 # ----------------------------
+
+@router.post("/message", response_model=ChatResponse)
+def send_message(
+    chat_request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Simple LLM chat without tools"""
+    if not llm:
+        raise HTTPException(status_code=500, detail="LLM not configured")
+
+    db.add(ChatMessage(
+        user_id=current_user.id,
+        role="user",
+        content=chat_request.message,
+    ))
+    db.commit()
+
+    response = llm.invoke([
+        SystemMessage(content="You are a helpful personal AI assistant."),
+        HumanMessage(content=chat_request.message),
+    ])
+
+    assistant_msg = ChatMessage(
+        user_id=current_user.id,
+        role="assistant",
+        content=response.content,
+    )
+    db.add(assistant_msg)
+    db.commit()
+    db.refresh(assistant_msg)
+
+    return {
+        "response": response.content,
+        "message_id": assistant_msg.id,
+    }
+
+
 @router.get("/history", response_model=list[ChatMessageResponse])
 def get_chat_history(
     limit: int = 50,
