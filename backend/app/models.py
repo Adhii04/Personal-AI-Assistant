@@ -39,18 +39,26 @@ class AgentMemory(Base):
     __tablename__ = "agent_memory"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
-
-    # memory_type examples:
-    # preference, project_status, habit, style
-    memory_type = Column(String(50), index=True)
-
-    # short label
-    key = Column(String(100), index=True)
-
-    # natural language value
-    value = Column(Text)
-
-    source = Column(String(50))  # chat | email | system
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Memory classification
+    memory_type = Column(String, default="preference", nullable=False)
+    # e.g. "preference", "fact", "constraint"
+    
+    key = Column(String, default="meeting_time", nullable=False)
+    # e.g. "meeting_time", "work_hours", "email_signature"
+    
+    value = Column(Text, nullable=False)
+    # The raw user statement
+    
+    scope_date = Column(String, nullable=True)
+    # ISO date string for date-specific memories, None for global
+    
+    source = Column(String, default="chat", nullable=False)
+    # How this memory was created: "chat", "import", "system"
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    def __repr__(self):
+        return f"<AgentMemory(id={self.id}, user_id={self.user_id}, type={self.memory_type}, value='{self.value[:50]}...')>"
