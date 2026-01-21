@@ -86,82 +86,68 @@ def send_message_with_tools(
 ):
     if not llm:
         raise HTTPException(status_code=500, detail="LLM not configured")
-
+    
     if not current_user.is_google_connected or not current_user.google_access_token:
         raise HTTPException(status_code=403, detail="Please connect your Google account")
-
-    # 🔥🔥🔥 ADD MEMORY STORE HERE 🔥🔥🔥
-    if "prefer" in chat_request.message.lower():
-        store_user_memory(
-            user_id=current_user.id,
-            value=chat_request.message
-        )
-
-    # -------- Run LangGraph Agent --------
+    
+    # Store memory if detected
+    if "prefer" in chat_request.message.lower() or "hate" in chat_request.message.lower():
+        store_user_memory(user_id=current_user.id, value=chat_request.message)
+    
+    # Build belief state from ALL memories
+    from app.memory.interpreter import build_belief_state
+    belief_state = build_belief_state(current_user.id)
+    
+    # Run agent with reasoning
     tools = AgentTools(current_user.google_access_token)
-    agent = build_agent(tools)
-
+    agent = build_agent(tools, belief_state)
+    
     try:
-        memories = load_user_memories(current_user.id)
         state = agent.invoke({
             "message": chat_request.message,
             "intent": None,
             "result": None,
-            "memories": memories,   # ✅ PASS MEMORY
+            "belief_state": belief_state,
+            "target_date": None,
+            "proposed_time": None,
+            "conflicts": None,
+            "needs_clarification": False,
+            "clarification_question": None
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
-
+    
     tool_result = state.get("result", "")
-
-    # -------- LOAD MEMORY FROM DB (FIX) --------
-    memories = load_user_memories(current_user.id)
-
-    memory_text = ""
-    if memories:
-        memory_text = "User preferences and memories:\n" + "\n".join(
-            f"- {m}" for m in memories
-        )
-
-    # -------- Save user message --------
-    db.add(ChatMessage(
-        user_id=current_user.id,
-        role="user",
-        content=chat_request.message,
-    ))
+    
+    # Save messages
+    db.add(ChatMessage(user_id=current_user.id, role="user", content=chat_request.message))
     db.commit()
-
-    # -------- Final LLM response --------
+    
+    # Final LLM response (now with context)
     prompt = f"""
-User request:
-{chat_request.message}
+User request: {chat_request.message}
 
-{memory_text}
+Agent analysis and action: {tool_result}
 
-Tool result:
-{tool_result}
-
-Respond clearly and helpfully, using the user's memory when relevant.
+Respond naturally, acknowledging any reasoning the agent provided.
 """
-
+    
     response = llm.invoke([
         SystemMessage(content="You are a helpful personal AI assistant."),
-        HumanMessage(content=prompt),
+        HumanMessage(content=prompt)
     ])
-
+    
     assistant_msg = ChatMessage(
         user_id=current_user.id,
         role="assistant",
-        content=response.content,
+        content=response.content
     )
     db.add(assistant_msg)
     db.commit()
     db.refresh(assistant_msg)
+    
+    return {"response": response.content, "message_id": assistant_msg.id}
 
-    return {
-        "response": response.content,
-        "message_id": assistant_msg.id,
-    }
 
 
 # ----------------------------
