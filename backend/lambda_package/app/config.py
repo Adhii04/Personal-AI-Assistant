@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Optional
-from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -21,13 +20,11 @@ class Settings(BaseSettings):
     # Google OAuth
     google_client_id: Optional[str] = None
     google_client_secret: Optional[str] = None
-    google_redirect_uri: str = Field(
-        ..., env="GOOGLE_REDIRECT_URI"
-    )
+    google_redirect_uri: Optional[str] = None
     
     # Server
     port: int = 8000
-    frontend_url: str = "https://d2qxcr28lgldld.cloudfront.net"
+    frontend_url: str = "http://localhost:5173"
     
     class Config:
         env_file = ".env"
